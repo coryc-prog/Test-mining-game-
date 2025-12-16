@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Geo-Miner Prototype</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; overflow: hidden; }
+        #map { height: 100vh; width: 100vw; z-index: 1; }
+        
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+            width: 80%;
+            max-width: 400px;
+            backdrop-filter: blur(5px);
+        }
+
+        #mine-btn {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 15px 32px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin-top: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            font-weight: bold;
+        }
+        
+        #mine-btn:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+
+        .stat-box { display: flex; justify-content: space-between; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div id="ui-layer">
+        <div class="stat-box">
+            <span>⛏️ Ore Mined:</span>
+            <span id="score">0</span>
+        </div>
+        <div id="status">Waiting for GPS...</div>
+        <button id="mine-btn" disabled>Walk closer to mine!</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        // --- Game State ---
+        let userPos = null;
+        let resources = [];
+        let inventory = parseInt(localStorage.getItem('geoMinerScore')) || 0;
+        const MINE_DISTANCE = 20; // Meters
+        const SPAWN_RADIUS = 0.002; // Roughly 200 meters in Lat/Lng degrees
+        
+        // Update UI immediately
+        document.getElementById('score').innerText = inventory;
+
+        // --- Map Initialization ---
+        const map = L.map('map').setView([0, 0], 2);
+        
+        // Add OpenStreetMap tiles (Dark mode for "Cyber" feel)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        // Player Marker
+        const playerIcon = L.divIcon({
+            html: '<div style="background:cyan; width:15px; height:15px; border-radius:50%; border:2px solid white; box-shadow:0 0 10px cyan;"></div>',
+            className: 'player-marker'
+        });
+        const playerMarker = L.marker([0, 0], {icon: playerIcon}).addTo(map);
+
+        // --- Geolocation Logic ---
+        if(!navigator.geolocation) {
+            alert("Geolocation is not supported by this browser.");
+        } else {
+            navigator.geolocation.watchPosition(success, error, {
+                enableHighAccuracy: true,
+                maximumAge: 10000,
+                timeout: 5000
+            });
+        }
+
+        function success(position) {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+
+            userPos = { lat, lng };
+
+            // Update Map View
+            const zoom = map.getZoom();
+            if(zoom < 10) map.setView([lat, lng], 18); // Auto zoom in on first load
+            
+            playerMarker.setLatLng([lat, lng]);
+
+            document.getElementById('status').innerText = `GPS Accuracy: ${Math.round(accuracy)}m`;
+
+            // Spawn resources if none exist (or just to keep world populated)
+            if(resources.length < 5) {
+                spawnResources(lat, lng);
+            }
+
+            checkProximity();
+        }
+
+        function error() {
+            document.getElementById('status').innerText = "Unable to retrieve location.";
+        }
+
+        // --- Game Logic ---
+
+        function spawnResources(centerLat, centerLng) {
+            // Create a random point nearby
+            const rLat = centerLat + (Math.random() - 0.5) * SPAWN_RADIUS;
+            const rLng = centerLng + (Math.random() - 0.5) * SPAWN_RADIUS;
+            
+            // Visual for the Resource
+            const resIcon = L.divIcon({
+                html: '<div style="background:gold; width:20px; height:20px; border-radius:4px; border:2px solid orange; box-shadow:0 0 10px gold; text-align:center; line-height:20px;">💎</div>',
+                className: 'resource-marker'
+            });
+
+            const marker = L.marker([rLat, rLng], {icon: resIcon}).addTo(map);
+            
+            resources.push({
+                marker: marker,
+                lat: rLat,
+                lng: rLng,
+                id: Math.random()
+            });
+        }
+
+        function checkProximity() {
+            if(!userPos) return;
+
+            let mineableNode = null;
+            let minDistance = Infinity;
+
+            resources.forEach(res => {
+                const dist = getDistanceFromLatLonInMeters(userPos.lat, userPos.lng, res.lat, res.lng);
+                if(dist < MINE_DISTANCE) {
+                    mineableNode = res;
+                }
+                if(dist < minDistance) minDistance = dist;
+            });
+
+            const btn = document.getElementById('mine-btn');
+            
+            if(mineableNode) {
+                btn.disabled = false;
+                btn.innerText = "⛏️ MINE RESOURCE! ⛏️";
+                btn.onclick = () => mineResource(mineableNode);
+                btn.style.backgroundColor = "#4CAF50";
+            } else {
+                btn.disabled = true;
+                btn.innerText = `Nearest: ${Math.round(minDistance)}m away`;
+                btn.onclick = null;
+                btn.style.backgroundColor = "#555";
+            }
+        }
+
+        function mineResource(resource) {
+            // Remove from map
+            map.removeLayer(resource.marker);
+            
+            // Remove from array
+            resources = resources.filter(r => r.id !== resource.id);
+            
+            // Increment Score
+            inventory++;
+            localStorage.setItem('geoMinerScore', inventory);
+            document.getElementById('score').innerText = inventory;
+            
+            // Reset Button
+            checkProximity();
+            
+            // Spawn new one to keep gameplay going
+            spawnResources(userPos.lat, userPos.lng);
+        }
+
+        // --- Math Helper (Haversine Formula) ---
+        function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
+            var R = 6371; // Radius of the earth in km
+            var dLat = deg2rad(lat2-lat1);  // deg2rad below
+            var dLon = deg2rad(lon2-lon1); 
+            var a = 
+                Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * Math.sin(dLon/2) * Math.sin(dLon/2); 
+            var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+            var d = R * c; // Distance in km
+            return d * 1000; // Distance in meters
+        }
+
+        function deg2rad(deg) {
+            return deg * (Math.PI/180)
+        }
+    </script>
+</body>
+</html>
+
+Initial game files
